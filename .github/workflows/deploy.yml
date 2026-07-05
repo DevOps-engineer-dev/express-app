@@ -41,10 +41,10 @@ jobs:
       # -----------------------------------------------------------------------
       # 2. Node.js — install dependencies and run tests
       # -----------------------------------------------------------------------
-      - name: Set up Node.js 20
+      - name: Set up Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -85,17 +85,25 @@ jobs:
           docker push $ECR_REGISTRY/${{ vars.ECR_REPOSITORY }}:latest
 
       # -----------------------------------------------------------------------
-      # 5. ECS — register new task definition and roll out the service
+      # 5. ECS — inject new image into task definition, then deploy
       # -----------------------------------------------------------------------
+      # v2 of deploy-task-definition does not accept container-name/image directly;
+      # use render-task-definition first to produce an updated task-def JSON.
+      - name: Render ECS task definition with new image
+        id: render-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ecs-task-definition.json
+          container-name: demo-node-app
+          image: ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+
       - name: Deploy new image to ECS Fargate
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
-          task-definition: ecs-task-definition.json
+          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
           service: ${{ vars.ECS_SERVICE }}
           cluster: ${{ vars.ECS_CLUSTER }}
           wait-for-service-stability: true
-          container-name: demo-node-app
-          image: ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
 
       # -----------------------------------------------------------------------
       # 6. Post-deploy smoke test — confirm the live app is healthy
