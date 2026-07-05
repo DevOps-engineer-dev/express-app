@@ -5,12 +5,16 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "test": "node --test test/*.test.js"
   },
   "keywords": ["express", "docker"],
   "license": "MIT",
   "dependencies": {
     "dotenv": "^16.4.7",
     "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "supertest": "^7.0.0"
   }
 }

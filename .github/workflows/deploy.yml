@@ -1,0 +1,108 @@
+# =============================================================================
+# Build, Test & Deploy — demo-node-app
+# =============================================================================
+# Trigger : every push to main
+# Flow    : checkout → install → test → build image → push ECR → deploy ECS → verify
+# Auth    : GitHub OIDC (no AWS access keys stored in GitHub)
+#
+# Required GitHub Variables (Settings → Actions → Variables):
+#   AWS_REGION        e.g. ap-south-1
+#   AWS_ROLE_ARN      IAM role for OIDC (github-actions-express-app-deploy)
+#   ECR_REPOSITORY    e.g. demo-node-app
+#   ECS_CLUSTER       e.g. demo-node-app-cluster
+#   ECS_SERVICE       e.g. demo-node-app-service
+#   HEALTH_CHECK_URL  e.g. https://www.demoexpressapp.me/health
+# =============================================================================
+
+name: Build, Test and Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+# OIDC needs id-token to exchange for temporary AWS credentials
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-test-deploy:
+    name: Build, test, and deploy to ECS
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Source code
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 2. Node.js — install dependencies and run tests
+      # -----------------------------------------------------------------------
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run automated tests
+        run: npm test
+
+      # -----------------------------------------------------------------------
+      # 3. AWS authentication via OIDC (short-lived credentials)
+      # -----------------------------------------------------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # -----------------------------------------------------------------------
+      # 4. Docker — build image and push to ECR (tagged with commit SHA + latest)
+      # -----------------------------------------------------------------------
+      - name: Build and push Docker image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Building image: $ECR_REGISTRY/${{ vars.ECR_REPOSITORY }}:$IMAGE_TAG"
+          docker build -t $ECR_REGISTRY/${{ vars.ECR_REPOSITORY }}:$IMAGE_TAG .
+
+          echo "Pushing commit-tagged image..."
+          docker push $ECR_REGISTRY/${{ vars.ECR_REPOSITORY }}:$IMAGE_TAG
+
+          echo "Tagging and pushing latest..."
+          docker tag $ECR_REGISTRY/${{ vars.ECR_REPOSITORY }}:$IMAGE_TAG $ECR_REGISTRY/${{ vars.ECR_REPOSITORY }}:latest
+          docker push $ECR_REGISTRY/${{ vars.ECR_REPOSITORY }}:latest
+
+      # -----------------------------------------------------------------------
+      # 5. ECS — register new task definition and roll out the service
+      # -----------------------------------------------------------------------
+      - name: Deploy new image to ECS Fargate
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ecs-task-definition.json
+          service: ${{ vars.ECS_SERVICE }}
+          cluster: ${{ vars.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          container-name: demo-node-app
+          image: ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+
+      # -----------------------------------------------------------------------
+      # 6. Post-deploy smoke test — confirm the live app is healthy
+      # -----------------------------------------------------------------------
+      - name: Verify live application health endpoint
+        run: |
+          echo "Checking: ${{ vars.HEALTH_CHECK_URL }}"
+          curl -fsS ${{ vars.HEALTH_CHECK_URL }}
+          echo ""
+          echo "Smoke test passed."
